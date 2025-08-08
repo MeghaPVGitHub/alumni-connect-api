@@ -1,4 +1,7 @@
 {
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.py" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
