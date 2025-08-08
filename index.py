@@ -1,41 +1,34 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from http.server import BaseHTTPRequestHandler
+import json
 import joblib
 import pandas as pd
 import os
 
-# This creates the main Flask application object that Vercel will use
-app = Flask(__name__)
+# Load the model and columns just once when the function starts
+model = joblib.load(os.path.join(os.path.dirname(__file__), 'alumni_match_model.joblib'))
+model_columns = joblib.load(os.path.join(os.path.dirname(__file__), 'model_feature_columns.joblib'))
 
-# This is the key: it tells the app to allow requests from any origin,
-# which is what will fix the CORS error.
-CORS(app)
+class handler(BaseHTTPRequestHandler):
 
-# --- Load the model and columns ---
-# This finds the files in the Vercel deployment environment
-base_path = os.path.dirname(__file__)
-model_path = os.path.join(base_path, 'alumni_match_model.joblib')
-columns_path = os.path.join(base_path, 'model_feature_columns.joblib')
+    def _send_cors_headers(self):
+        # This helper function sends the required permission headers
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-model = joblib.load(model_path)
-model_columns = joblib.load(columns_path)
+    def do_OPTIONS(self):
+        # This specifically handles the browser's "preflight" permission check
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
 
+    def do_POST(self):
+        # Read the incoming data from the React app
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        incoming_data = json.loads(post_data)
 
-# Vercel looks for a single 'handler' or an 'app' object.
-# By defining a route on the 'app' object, Vercel knows how to direct traffic.
-@app.route('/', defaults={'path': ''}, methods=['POST', 'OPTIONS'])
-@app.route('/<path:path>', methods=['POST', 'OPTIONS'])
-def handler(path):
-    # This handles the browser's pre-flight OPTIONS request
-    if request.method == 'OPTIONS':
-        # Create a response with the correct headers
-        response = jsonify(success=True)
-        return response
-
-    # This handles the actual POST request with the data
-    if request.method == 'POST':
-        incoming_data = request.get_json()
-
+        # --- PREPARE DATA FOR PREDICTION ---
         df = pd.DataFrame([incoming_data])
 
         def count_common_skills(row):
@@ -58,8 +51,16 @@ def handler(path):
 
         final_df = df[model_columns]
 
+        # --- MAKE PREDICTION ---
         prediction_proba = model.predict_proba(final_df)
         match_probability = prediction_proba[0][1]
         final_score = round(match_probability * 10)
 
-        return jsonify({'score': final_score})
+        # --- SEND RESPONSE ---
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._send_cors_headers() # Send permission headers with the actual response too
+        self.end_headers()
+
+        response = {'score': final_score}
+        self.wfile.write(json.dumps(response).encode('utf-8'))
