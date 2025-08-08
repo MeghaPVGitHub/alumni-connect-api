@@ -1,34 +1,34 @@
-from http.server import BaseHTTPRequestHandler
-import json
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import joblib
 import pandas as pd
-import os
+import requests
+import io
 
-# Load the model and columns just once when the function starts
-model = joblib.load(os.path.join(os.path.dirname(__file__), 'alumni_match_model.joblib'))
-model_columns = joblib.load(os.path.join(os.path.dirname(__file__), 'model_feature_columns.joblib'))
+app = Flask(__name__)
+CORS(app)
 
-class handler(BaseHTTPRequestHandler):
+# --- Load Models from Hugging Face ---
+# PASTE THE URLS YOU COPIED FROM HUGGING FACE HERE
+MODEL_URL = "https://huggingface.co/Megzz22/alumni-connect-model/resolve/main/alumni_match_model.joblib"
+COLUMNS_URL = "https://huggingface.co/Megzz22/alumni-connect-model/resolve/main/model_feature_columns.joblib"
 
-    def _send_cors_headers(self):
-        # This helper function sends the required permission headers
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+# Download and load the model
+model_res = requests.get(MODEL_URL)
+model = joblib.load(io.BytesIO(model_res.content))
 
-    def do_OPTIONS(self):
-        # This specifically handles the browser's "preflight" permission check
-        self.send_response(200)
-        self._send_cors_headers()
-        self.end_headers()
+# Download and load the column list
+columns_res = requests.get(COLUMNS_URL)
+model_columns = joblib.load(io.BytesIO(columns_res.content))
 
-    def do_POST(self):
-        # Read the incoming data from the React app
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        incoming_data = json.loads(post_data)
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def handler(path):
+    if request.method == 'OPTIONS':
+        return jsonify(success=True)
 
-        # --- PREPARE DATA FOR PREDICTION ---
+    if request.method == 'POST':
+        incoming_data = request.get_json()
         df = pd.DataFrame([incoming_data])
 
         def count_common_skills(row):
@@ -50,17 +50,8 @@ class handler(BaseHTTPRequestHandler):
                 df[company_col_name] = 1
 
         final_df = df[model_columns]
-
-        # --- MAKE PREDICTION ---
         prediction_proba = model.predict_proba(final_df)
         match_probability = prediction_proba[0][1]
         final_score = round(match_probability * 10)
 
-        # --- SEND RESPONSE ---
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self._send_cors_headers() # Send permission headers with the actual response too
-        self.end_headers()
-
-        response = {'score': final_score}
-        self.wfile.write(json.dumps(response).encode('utf-8'))
+        return jsonify({'score': final_score})
